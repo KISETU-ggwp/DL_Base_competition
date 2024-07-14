@@ -304,6 +304,60 @@ class VQAModel(nn.Module):
 
         return output
 
+import torch
+import time
+from torch.optim import Adam
+from torch.nn import CrossEntropyLoss
+from torch.utils.data import DataLoader
+
+def train(model, dataloader, optimizer, criterion, device):
+    model.train()
+    total_loss = 0
+    total_vqa_score = 0
+    total_simple_acc = 0
+    start = time.time()
+    for batch in dataloader:
+        image, question, answers, mode_answer = [item.to(device) for item in batch]
+
+        optimizer.zero_grad()
+        pred = model(image, question)
+        loss = criterion(pred, mode_answer)
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        total_vqa_score += vqa_score(pred, answers)
+        total_simple_acc += (pred.argmax(1) == mode_answer).float().mean().item()
+
+    num_batches = len(dataloader)
+    return (total_loss / num_batches,
+            total_vqa_score / num_batches,
+            total_simple_acc / num_batches,
+            time.time() - start)
+
+def evaluate(model, dataloader, criterion, device):
+    model.eval()
+    total_loss = 0
+    total_vqa_score = 0
+    total_simple_acc = 0
+    start = time.time()
+    with torch.no_grad():
+        for batch in dataloader:
+            image, question, answers, mode_answer = [item.to(device) for item in batch]
+
+            pred = model(image, question)
+            loss = criterion(pred, mode_answer)
+
+            total_loss += loss.item()
+            total_vqa_score += vqa_score(pred, answers)
+            total_simple_acc += (pred.argmax(1) == mode_answer).float().mean().item()
+
+    num_batches = len(dataloader)
+    return (total_loss / num_batches,
+            total_vqa_score / num_batches,
+            total_simple_acc / num_batches,
+            time.time() - start)
+
 # 学習曲線の実行
 import matplotlib.pyplot as plt
 
