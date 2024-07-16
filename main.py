@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from torch.utils.data import Dataset
 from torchvision import transforms
 import torchvision.models as models
 import numpy as np
@@ -14,6 +15,7 @@ import torchtext
 from sklearn.model_selection import KFold
 import csv
 from google.colab import drive
+from torchtext.vocab import vocab #新しいVer対応になっている
 
 from google.colab import drive
 drive.mount('/content/drive')
@@ -97,7 +99,7 @@ def process_text(text):
         text = text.replace(contraction, expansion)
 
     # 一部の非単語記号を除去 (?, !, ", ')
-    text = re.sub(r'[?!"']', '', text)
+    text = re.sub(r'[?!"\']', '', text)
 
     # 一部の非単語記号を分離 ((, ), /, ...)
     text = re.sub(r'([()]|/|\.\.\.)', r' \1 ', text)
@@ -106,7 +108,7 @@ def process_text(text):
     text = re.sub(r',', ' , ', text)
 
     # 連続するスペースを1つに変換
-    text = re.sub(r'\s+', ' ', text).strip()
+    text = re.sub(r'\s+', ' ', text).strip
 
     return text
 
