@@ -15,15 +15,7 @@ from sklearn.model_selection import KFold
 import csv
 from google.colab import drive
 
-def set_seed(seed):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
+from google.colab import drive
 drive.mount('/content/drive')
 
 import os
@@ -67,6 +59,15 @@ if missing_files:
     print(f"Missing files: {missing_files}")
 else:
     print("All files copied successfully.")
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 def process_text(text):
     # lowercase
