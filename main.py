@@ -1,17 +1,19 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset
-from torchvision import transforms, models
-import torchtext
-import pandas as pd
-from PIL import Image
+from torch.utils.data import DataLoader
+from torchvision import transforms
+import torchvision.models as models
 import numpy as np
 import time
 import re
 import random
-import csv
+import pandas as pd
+from PIL import Image
+import torchtext
 from sklearn.model_selection import KFold
+import csv
+from google.colab import drive
 
 def set_seed(seed):
     random.seed(seed)
@@ -22,9 +24,89 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
+drive.mount('/content/drive')
+
+import os
+import shutil
+from concurrent.futures import ThreadPoolExecutor
+
+# コピー元とコピー先のディレクトリを指定
+src_dir = '/content/drive/MyDrive/DL_base/DL_base_Last/data'
+dst_dir = '/content/data'
+
+# コピー先ディレクトリを作成
+os.makedirs(dst_dir, exist_ok=True)
+
+# コピーするファイルのリストを作成
+files_to_copy = []
+for root, _, files in os.walk(src_dir):
+    for file in files:
+        src_file = os.path.join(root, file)
+        dst_file = os.path.join(dst_dir, os.path.relpath(src_file, src_dir))
+        files_to_copy.append((src_file, dst_file))
+
+# 並列でファイルをコピーする関数
+def copy_file(src_dst):
+    src_file, dst_file = src_dst
+    dst_file_dir = os.path.dirname(dst_file)
+    os.makedirs(dst_file_dir, exist_ok=True)
+    try:
+        shutil.copy2(src_file, dst_file)
+    except Exception as e:
+        print(f"Error copying {src_file} to {dst_file}: {e}")
+
+# ThreadPoolExecutorを使って並列でコピー
+with ThreadPoolExecutor(max_workers=24) as executor:
+    executor.map(copy_file, files_to_copy)
+
+# ファイルがすべてコピーされたかを確認
+copied_files = [os.path.join(root, file) for root, _, files in os.walk(dst_dir) for file in files]
+missing_files = [src for src, dst in files_to_copy if dst not in copied_files]
+
+if missing_files:
+    print(f"Missing files: {missing_files}")
+else:
+    print("All files copied successfully.")
+
 def process_text(text):
+    # lowercase
     text = text.lower()
-    text = re.sub(r'[^\w\s]', '', text)
+
+    # 数詞を数字に変換 (zero to twelve)
+    num_word_to_digit = {
+        'zero': '0', 'one': '1', 'two': '2', 'three': '3', 'four': '4',
+        'five': '5', 'six': '6', 'seven': '7', 'eight': '8', 'nine': '9',
+        'ten': '10', 'eleven': '11', 'twelve': '12'
+    }
+    for word, digit in num_word_to_digit.items():
+        text = re.sub(r'\b' + word + r'\b', digit, text)
+
+    # 小数点のピリオドを保持しつつ、その他のピリオドを削除
+    text = re.sub(r'(?<!\.)\\.(?!\.)', '', text)
+
+    # 冠詞の削除
+    text = re.sub(r'\b(a|an|the)\b', '', text)
+
+    # 短縮形の展開
+    contractions = {
+        "n't": " not", "'s": " is", "'re": " are", "'m": " am",
+        "'ll": " will", "'ve": " have", "'d": " would"
+    }
+    for contraction, expansion in contractions.items():
+        text = text.replace(contraction, expansion)
+
+    # 一部の非単語記号を除去 (?, !, ", ')
+    text = re.sub(r'[?!"']', '', text)
+
+    # 一部の非単語記号を分離 ((, ), /, ...)
+    text = re.sub(r'([()]|/|\.\.\.)', r' \1 ', text)
+
+    # カンマの前後にスペースを追加
+    text = re.sub(r',', ' , ', text)
+
+    # 連続するスペースを1つに変換
+    text = re.sub(r'\s+', ' ', text).strip()
+
     return text
 
 class VQADataset(Dataset):
@@ -36,35 +118,44 @@ class VQADataset(Dataset):
         self.max_length = max_length
         self.class_mapping = class_mapping
 
+        # GloVeの初期化
         self.glove = torchtext.vocab.GloVe(name='6B', dim=300)
+
+        # 質問の語彙を作成
         self.question_vocab = self._build_vocab(self.df['question'])
 
         if self.answer and self.class_mapping:
             self.idx2answer = {v: k for k, v in self.class_mapping.items()}
         elif self.answer:
+            # class_mappingがない場合は従来の方法で回答の語彙を作成
             self.answer_vocab = self._build_vocab([ans['answer'] for answers in self.df['answers'] for ans in answers])
             self.idx2answer = {v: k for k, v in self.answer_vocab.items()}
 
     def _build_vocab(self, sentences):
         vocab = {'<pad>': 0, '<unk>': 1}
         for sentence in sentences:
-            for word in process_text(sentence).split():
+            for word in self.process_text(sentence).split():
                 if word not in vocab:
                     vocab[word] = len(vocab)
         return vocab
+
+    def process_text(self, text):
+        text = text.lower()
+        text = re.sub(r'[^\w\s]', '', text)
+        return text
 
     def __getitem__(self, idx):
         image = Image.open(f"{self.image_dir}/{self.df['image'][idx]}")
         image = self.transform(image) if self.transform else image
 
-        question = process_text(self.df['question'][idx])
+        question = self.process_text(self.df['question'][idx])
         question_tokens = question.split()[:self.max_length]
         question_tokens += ['<pad>'] * (self.max_length - len(question_tokens))
         question_ids = [self.question_vocab.get(token, self.question_vocab['<unk>']) for token in question_tokens]
         question_tensor = torch.tensor(question_ids)
 
         if self.answer and 'answers' in self.df.columns:
-            answers = [process_text(answer['answer']) for answer in self.df['answers'][idx]]
+            answers = [self.process_text(answer['answer']) for answer in self.df['answers'][idx]]
             if self.class_mapping:
                 answer_ids = [self.class_mapping.get(ans, self.class_mapping['unanswerable']) for ans in answers]
             else:
@@ -77,6 +168,40 @@ class VQADataset(Dataset):
     def __len__(self):
         return len(self.df)
 
+def load_class_mapping(file_path):
+    class_mapping = {}
+    with open(file_path, 'r') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            class_mapping[row['answer']] = int(row['class_id'])
+    return class_mapping
+
+def vqa_score(batch_pred: torch.Tensor, batch_answers: torch.Tensor) -> float:
+    """
+    Compute VQA score for a batch of predictions and ground truth answers.
+
+    Args:
+    batch_pred (torch.Tensor): Predicted answers (batch_size, num_classes)
+    batch_answers (torch.Tensor): Ground truth answers (batch_size, 10)
+
+    Returns:
+    float: Average VQA score for the batch
+    """
+    batch_size = batch_pred.size(0)
+    num_answers = batch_answers.size(1)
+
+    # Get the index of the max log-probability
+    pred = batch_pred.argmax(dim=1)
+
+    scores = []
+    for i in range(batch_size):
+        answer_count = torch.bincount(batch_answers[i], minlength=batch_pred.size(1))
+        num_match = answer_count[pred[i]].item()
+        score = min(num_match / 3, 1)
+        scores.append(score)
+
+    return sum(scores) / batch_size
+
 class ImageFeatureExtractor(nn.Module):
     def __init__(self):
         super().__init__()
@@ -85,7 +210,7 @@ class ImageFeatureExtractor(nn.Module):
 
     def forward(self, x):
         features = self.features(x)
-        return features.view(x.size(0), 512, -1).permute(0, 2, 1)
+        return features.view(x.size(0), 512, -1).permute(0, 2, 1)  # (batch_size, 49, 512)
 
 class GRUEncoder(nn.Module):
     def __init__(self, vocab_size, embed_size, hidden_size, num_layers=1):
@@ -160,19 +285,6 @@ class VQAModel(nn.Module):
 
         return output
 
-def vqa_score(batch_pred: torch.Tensor, batch_answers: torch.Tensor) -> float:
-    batch_size = batch_pred.size(0)
-    pred = batch_pred.argmax(dim=1)
-
-    scores = []
-    for i in range(batch_size):
-        answer_count = torch.bincount(batch_answers[i], minlength=batch_pred.size(1))
-        num_match = answer_count[pred[i]].item()
-        score = min(num_match / 3, 1)
-        scores.append(score)
-
-    return sum(scores) / batch_size
-
 def train(model, dataloader, optimizer, criterion, device):
     model.train()
     total_loss = 0
@@ -221,15 +333,8 @@ def evaluate(model, dataloader, criterion, device):
             total_simple_acc / num_batches,
             time.time() - start)
 
-def load_class_mapping(file_path):
-    class_mapping = {}
-    with open(file_path, 'r') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            class_mapping[row['answer']] = int(row['class_id'])
-    return class_mapping
-
 def main():
+    # ハイパーパラメータの設定
     config = {
         "seed": 42,
         "batch_size": 128,
@@ -250,17 +355,21 @@ def main():
         "class_mapping_path": "/content/drive/MyDrive/DL_base/DL_base_Last/data/class_mapping.csv"
     }
 
+    # デバイスとシードの設定
     set_seed(config["seed"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    # データの前処理
     transform = transforms.Compose([
         transforms.Resize(config["image_size"]),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
 
+    # class_mappingの読み込み
     class_mapping = load_class_mapping(config["class_mapping_path"])
 
+    # データセットの準備
     full_dataset = VQADataset(df_path=config["data_path"]["train_json"],
                               image_dir=config["data_path"]["train_image"],
                               transform=transform,
@@ -274,26 +383,31 @@ def main():
                               answer=False,
                               class_mapping=class_mapping)
 
+    # 5分割交差検証の設定
     kfold = KFold(n_splits=5, shuffle=True, random_state=config["seed"])
 
+    # 各foldの結果を保存するリスト
     fold_results = []
 
     for fold, (train_ids, val_ids) in enumerate(kfold.split(full_dataset)):
         print(f"FOLD {fold}")
         print("--------------------------------")
 
+        # データローダーの準備
         train_subsampler = torch.utils.data.SubsetRandomSampler(train_ids)
         val_subsampler = torch.utils.data.SubsetRandomSampler(val_ids)
 
         train_loader = DataLoader(full_dataset, batch_size=config["batch_size"], sampler=train_subsampler)
         val_loader = DataLoader(full_dataset, batch_size=config["batch_size"], sampler=val_subsampler)
 
+        # モデルの初期化
         model = VQAModel(vocab_size=len(full_dataset.question_vocab),
                          embed_size=config["embed_size"],
                          hidden_size=config["hidden_size"],
                          num_classes=len(class_mapping),
                          num_gru_layers=config["num_gru_layers"]).to(device)
 
+        # GloVeの重みで埋め込み層を初期化
         glove_embeddings = torch.zeros(len(full_dataset.question_vocab), config["embed_size"])
         for word, idx in full_dataset.question_vocab.items():
             if word in full_dataset.glove.stoi:
@@ -302,9 +416,11 @@ def main():
         model.question_encoder.embedding.weight.data.copy_(glove_embeddings)
         model.question_encoder.embedding.weight.requires_grad = False
 
+        # 最適化器と損失関数の設定
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.Adam(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
 
+        # 学習ループ
         best_val_score = 0
         for epoch in range(config["num_epochs"]):
             train_loss, train_vqa_score, train_simple_acc, train_time = train(model, train_loader, optimizer, criterion, device)
@@ -314,7 +430,39 @@ def main():
             print(f"Train - Loss: {train_loss:.4f}, VQA Score: {train_vqa_score:.4f}, Acc: {train_simple_acc:.4f}, Time: {train_time:.2f}s")
             print(f"Val   - Loss: {val_loss:.4f}, VQA Score: {val_vqa_score:.4f}, Acc: {val_simple_acc:.4f}, Time: {val_time:.2f}s")
 
+            # 最良モデルの保存
             if val_vqa_score > best_val_score:
                 best_val_score = val_vqa_score
                 torch.save(model.state_dict(), f"/content/drive/MyDrive/DL_base/DL_base_Last/data/best_model_fold{fold}.pth")
                 print("Best model saved!")
+
+        fold_results.append(best_val_score)
+        print(f"Best validation score for fold {fold}: {best_val_score:.4f}")
+
+    print("--------------------------------")
+    print(f"Average validation score: {np.mean(fold_results):.4f}")
+    print(f"Standard deviation: {np.std(fold_results):.4f}")
+
+    # 全てのfoldで最も良かったモデルを使用してテストデータの予測
+    best_fold = np.argmax(fold_results)
+    best_model_path = f"/content/drive/MyDrive/DL_base/DL_base_Last/data/best_model_fold{best_fold}.pth"
+    model.load_state_dict(torch.load(best_model_path))
+    model.eval()
+
+    test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+    submission = []
+    with torch.no_grad():
+        for image, question in test_loader:
+            image = image.to(device)
+            question = question.to(device)
+            pred = model(image, question)
+            pred = pred.argmax(1).cpu().item()
+            submission.append(full_dataset.idx2answer[pred])
+
+    submission = np.array(submission)
+
+    # 提出ファイルの保存
+    np.save("/content/drive/MyDrive/DL_base/DL_base_Last/data/submission_test.npy", submission)
+
+if __name__ == "__main__":
+    main()
